@@ -109,16 +109,29 @@ class TenebrioDensityDataset(Dataset):
 
     @staticmethod
     def _build_density_map(width: int, height: int, boxes: list[list[float]]) -> np.ndarray:
-        density = np.zeros((height, width), dtype=np.float32)
+        """Build density map using coordinate scaling approach (Li et al., 2018).
+        
+        Scales coordinates by 1/8 first, places impulses on small grid,
+        then applies Gaussian blur with sigma=15/8. This avoids interpolation loss.
+        """
+        scale = 1.0 / 8.0
+        small_height = int(np.ceil(height * scale))
+        small_width = int(np.ceil(width * scale))
+        density = np.zeros((small_height, small_width), dtype=np.float32)
+        
         for bbox in boxes:
             x, y, w, h = bbox
-            center_x = int(round(x + w / 2.0))
-            center_y = int(round(y + h / 2.0))
-            if 0 <= center_x < width and 0 <= center_y < height:
-                density[center_y, center_x] += 1.0
+            center_x = (x + w / 2.0) * scale
+            center_y = (y + h / 2.0) * scale
+            
+            ix = int(round(center_x))
+            iy = int(round(center_y))
+            if 0 <= ix < small_width and 0 <= iy < small_height:
+                density[iy, ix] += 1.0
 
         if density.sum() > 0:
-            density = gaussian_filter(density, sigma=15, mode="constant")
+            sigma_small = 15.0 / 8.0
+            density = gaussian_filter(density, sigma=sigma_small, mode="constant")
 
         return density.astype(np.float32, copy=False)
 
