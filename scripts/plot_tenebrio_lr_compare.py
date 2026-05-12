@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 from pathlib import Path
 
 
@@ -19,7 +20,7 @@ def parse_args() -> argparse.Namespace:
         "--input-dir",
         type=Path,
         required=True,
-        help="Directory containing lr_*.csv files.",
+        help="Directory containing lr_*.csv files. Nested lr_*.csv files are supported when needed.",
     )
     parser.add_argument(
         "--linear-output",
@@ -59,9 +60,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _lr_sort_key(csv_path: Path) -> tuple[float, str]:
+    match = re.search(r"lr_([0-9eE+\-.]+)$", csv_path.stem)
+    if match is None:
+        return (float("inf"), csv_path.as_posix())
+    try:
+        return (float(match.group(1)), csv_path.as_posix())
+    except ValueError:
+        return (float("inf"), csv_path.as_posix())
+
+
+def _discover_csv_paths(input_dir: Path) -> list[Path]:
+    direct_paths = sorted(input_dir.glob("lr_*.csv"), key=_lr_sort_key)
+    if direct_paths:
+        return direct_paths
+    return sorted(input_dir.rglob("lr_*.csv"), key=_lr_sort_key)
+
+
 def read_histories(input_dir: Path, drop_first_epoch: bool, start_epoch: int | None):
     histories = {}
-    for csv_path in sorted(input_dir.glob("lr_*.csv")):
+    for csv_path in _discover_csv_paths(input_dir):
         lr_label = csv_path.stem.replace("lr_", "")
         rows = []
         with csv_path.open("r", encoding="utf-8") as handle:

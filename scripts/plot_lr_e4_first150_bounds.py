@@ -59,27 +59,31 @@ def main():
     
     # Compute smoothed mean and bounds
     train_m, _, _ = compute_bounds(train, window=21, k=1.0)
-    val_m, val_low, _ = compute_bounds(val, window=21, k=1.0)
+    val_m, _, val_high = compute_bounds(val, window=21, k=1.0)
+    avg_curve = (train_m + val_high) / 2.0
     
     # Create plot
     fig, ax = plt.subplots(figsize=(14, 6))
     
     ax.plot(epochs, train_m, label='train loss (smoothed)', color='C0', linewidth=2)
-    ax.plot(epochs, val_low, label='val loss lower bound (smoothed)', color='C1', linewidth=2)
+    ax.plot(epochs, val_high, label='val loss upper bound (smoothed)', color='C1', linewidth=2)
+    ax.plot(epochs, avg_curve, label='average curve', color='C2', linewidth=2.5)
     
-    ax.fill_between(epochs, train_m, val_low, where=(train_m <= val_low), 
-                    color='green', alpha=0.15, label='train < val_lower')
-    ax.fill_between(epochs, train_m, val_low, where=(train_m > val_low), 
-                    color='red', alpha=0.15, label='train > val_lower')
+    ax.fill_between(epochs, train_m, val_high, where=(train_m <= val_high), 
+                    color='green', alpha=0.10, label='train < val_upper')
+    ax.fill_between(epochs, train_m, val_high, where=(train_m > val_high), 
+                    color='red', alpha=0.10, label='train > val_upper')
+    ax.fill_between(epochs, train_m, avg_curve, color='C2', alpha=0.08, label='train to average')
+    ax.fill_between(epochs, avg_curve, val_high, color='C2', alpha=0.05, label='average to val_upper')
     
     ax.set_xlabel('Epoch', fontsize=12)
     ax.set_ylabel('Loss (MSE)', fontsize=12)
-    ax.set_title('LR 1e-4: Epochs 50-1200 — Smoothed Train vs Validation Lower Bound', fontsize=13)
+    ax.set_title('LR 1e-4: Epochs 50-1200 — Smoothed Train, Val Upper Bound, and Average', fontsize=13)
     ax.legend(fontsize=10, loc='upper right')
     ax.grid(True, alpha=0.3)
     
     out = os.path.join('exp', 'tenebrio_batch1_1200ep', 'checkpoints', 
-                       'lr_1e-4_epochs50-1200_train_vs_val_lower.png')
+                       'lr_1e-4_epochs50-1200_train_val_upper_average.png')
     os.makedirs(os.path.dirname(out), exist_ok=True)
     fig.tight_layout()
     fig.savefig(out, dpi=150)
