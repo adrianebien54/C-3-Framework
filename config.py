@@ -9,33 +9,24 @@ cfg = __C
 
 #------------------------------TRAIN------------------------
 __C.SEED = 3035 # random seed,  for reproduction
-__C.DATASET = 'SHHB' # dataset selection: GCC, SHHA, SHHB, UCF50, QNRF, WE, Mall, UCSD
+__C.DATASET = 'Tenebrio'
 
-if __C.DATASET == 'UCF50':# only for UCF50
-	from datasets.UCF50.setting import cfg_data
-	__C.VAL_INDEX = cfg_data.VAL_INDEX 
-
-if __C.DATASET == 'GCC':# only for GCC
-	from datasets.GCC.setting import cfg_data
-	__C.VAL_MODE = cfg_data.VAL_MODE 
-
-
-__C.NET = 'CSRNet' # net selection: MCNN, AlexNet, VGG, VGG_DECODER, Res50, CSRNet, SANet
+__C.NET = 'CSRNet'
 
 __C.PRE_GCC = False # use the pretrained model on GCC dataset
 __C.PRE_GCC_MODEL = 'path to model' # path to model
 
-__C.RESUME = False # contine training
-__C.RESUME_PATH = './exp/04-25_09-19_SHHB_VGG_1e-05/latest_state.pth' # 
+__C.RESUME = True # contine training
+__C.RESUME_PATH = './exp/05-20_15-15_Tenebrio_CSRNet_0.0001/latest_state.pth' #
 
-__C.GPU_ID = [0,1] # sigle gpu: [0], [1] ...; multi gpus: [0,1]
+__C.GPU_ID = [0] # sigle gpu: [0], [1] ...; multi gpus: [0,1]
 
 # learning rate settings
-__C.LR = 1e-5 # learning rate
-__C.LR_DECAY = 0.995 # decay rate
+__C.LR = 1e-4 # learning rate
+__C.LR_DECAY = 1.0 # decay rate (1.0 = disabled)
 __C.LR_DECAY_START = -1 # when training epoch is more than it, the learning rate will be begin to decay
 __C.NUM_EPOCH_LR_DECAY = 1 # decay frequency
-__C.MAX_EPOCH = 200
+__C.MAX_EPOCH = 600
 
 # multi-task learning weights, no use for single model, such as MCNN, VGG, VGG_DECODER, Res50, CSRNet, and so on
 
@@ -51,12 +42,6 @@ __C.EXP_NAME = now \
 			 + '_' + __C.DATASET \
              + '_' + __C.NET \
              + '_' + str(__C.LR)
-
-if __C.DATASET == 'UCF50':
-	__C.EXP_NAME += '_' + str(__C.VAL_INDEX)	
-
-if __C.DATASET == 'GCC':
-	__C.EXP_NAME += '_' + __C.VAL_MODE	
 
 __C.EXP_PATH = './exp' # the path of logs, checkpoints, and current codes
 

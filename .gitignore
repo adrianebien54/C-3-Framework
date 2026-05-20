@@ -108,3 +108,4 @@ backup_exp/
 datasets/
 archive/
 *checkpoints*/
+exp/

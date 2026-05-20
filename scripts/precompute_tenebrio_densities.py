@@ -143,24 +143,14 @@ def load_annotation_samples(data_dir: Path, annotation_file: Path) -> list[Teneb
 
 
 def build_density_map(width: int, height: int, boxes: list[list[float]]) -> np.ndarray:
-    """Build density map using coordinate scaling approach.
-    
-    Instead of blurring at full resolution then downsampling (which incurs
-    interpolation loss), we scale coordinates by 1/8 first, place impulses on
-    the small grid, then apply Gaussian blur with scaled sigma.
-    This matches the leeyeehoo CSRNet implementation (Li et al., 2018).
-    """
-    scale = 1.0 / 8.0
-    small_height = int(np.ceil(height * scale))
-    small_width = int(np.ceil(width * scale))
-    density = np.zeros((small_height, small_width), dtype=np.float32)
-
-    # Sub-pixel bilinear splatting reduces quantization error versus hard rounding.
+    """Build density map at full resolution with σ=15, matching the standalone training script."""
+    density = np.zeros((height, width), dtype=np.float32)
     target_count = float(len(boxes))
+
     for bbox in boxes:
         x, y, box_width, box_height = bbox
-        cx = (x + box_width / 2.0) * scale
-        cy = (y + box_height / 2.0) * scale
+        cx = x + box_width / 2.0
+        cy = y + box_height / 2.0
 
         x0 = int(np.floor(cx))
         y0 = int(np.floor(cy))
@@ -172,25 +162,14 @@ def build_density_map(width: int, height: int, boxes: list[list[float]]) -> np.n
         wx0 = 1.0 - wx1
         wy0 = 1.0 - wy1
 
-        if 0 <= x0 < small_width and 0 <= y0 < small_height:
-            density[y0, x0] += wx0 * wy0
-        if 0 <= x1 < small_width and 0 <= y0 < small_height:
-            density[y0, x1] += wx1 * wy0
-        if 0 <= x0 < small_width and 0 <= y1 < small_height:
-            density[y1, x0] += wx0 * wy1
-        if 0 <= x1 < small_width and 0 <= y1 < small_height:
-            density[y1, x1] += wx1 * wy1
+        if 0 <= x0 < width  and 0 <= y0 < height: density[y0, x0] += wx0 * wy0
+        if 0 <= x1 < width  and 0 <= y0 < height: density[y0, x1] += wx1 * wy0
+        if 0 <= x0 < width  and 0 <= y1 < height: density[y1, x0] += wx0 * wy1
+        if 0 <= x1 < width  and 0 <= y1 < height: density[y1, x1] += wx1 * wy1
 
-    # Apply Gaussian blur with scaled sigma.
-    # Reflect padding reduces boundary mass loss compared with constant padding.
     if density.sum() > 0:
-        sigma_small = 15.0 / 8.0  # sigma_original / 8
-        density = gaussian_filter(density, sigma=sigma_small, mode="reflect")
-
-        # Enforce exact count preservation after blur/truncation.
-        current_sum = float(density.sum())
-        if current_sum > 0:
-            density *= target_count / current_sum
+        density = gaussian_filter(density, sigma=15.0, mode="reflect")
+        density *= target_count / density.sum()
 
     return density.astype(np.float32, copy=False)
 
@@ -214,13 +193,19 @@ def main() -> None:
 
         with Image.open(sample.image_path) as image:
             image_width, image_height = image.size
-        if (image_width, image_height) != (sample.width, sample.height):
-            print(
-                f"[precompute] Warning: {sample.file_name} image size {image_width}x{image_height} "
-                f"differs from annotation size {sample.width}x{sample.height}. Using annotation size."
-            )
 
-        density = build_density_map(sample.width, sample.height, sample.boxes)
+        # Scale annotation coordinates (in original image space) to actual image space.
+        if (image_width, image_height) != (sample.width, sample.height):
+            sx = image_width / sample.width
+            sy = image_height / sample.height
+            scaled_boxes = [
+                [x * sx, y * sy, bw * sx, bh * sy]
+                for x, y, bw, bh in sample.boxes
+            ]
+        else:
+            scaled_boxes = sample.boxes
+
+        density = build_density_map(image_width, image_height, scaled_boxes)
         write_density_csv(output_path, density)
         written += 1
 
