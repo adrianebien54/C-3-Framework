@@ -2,28 +2,39 @@
 
 """Precompute Tenebrio ground-truth density maps into split `den` folders.
 
-Uses the coordinate-scaling-first approach: scales bbox center coordinates by 1/8,
-places impulses on the downsampled grid, then applies Gaussian blur with sigma=15/8.
-This avoids interpolation loss entirely (Li et al., 2018 / leeyeehoo CSRNet).
-The resulting density map at 1/8 resolution is written as a CSV file
-named after the corresponding image stem.
+Workflow:
+  1. Build density impulse map at full image resolution.
+  2. Apply Gaussian blur with sigma (in full-resolution pixels; default 15).
+  3. Downsample to 1/8 of the image resolution (matching CSRNet's output stride).
+  4. Renormalise so the pixel sum equals the object count.
+  5. Write as a CSV file named after the image stem.
 
-This is intended for the dataset layout used by the repo:
+The --sigma flag lets you sweep over different kernel sizes without touching
+the model.  The --output-dir flag writes density CSVs to a parallel directory
+(and symlinks the img/ folders from --data-dir) so multiple sigma variants can
+live side-by-side without duplicating images.
 
-datasets/Tenebrio/
-├── train/img
-├── train/den
-├── val/img
-├── val/den
-├── test/img
-├── test/den
-└── TenebrioVision_Annotations.json
+Usage:
+  # Default: regenerate sigma=15 CSVs in-place (skip existing)
+  python scripts/precompute_tenebrio_densities.py \
+      --data-dir datasets/Tenebrio/386x260 \
+      --annotation-file datasets/Tenebrio/386x260/TenebrioVision_Annotations_386x260.json
+
+  # Sigma variant stored separately:
+  python scripts/precompute_tenebrio_densities.py \
+      --data-dir datasets/Tenebrio/386x260 \
+      --annotation-file datasets/Tenebrio/386x260/TenebrioVision_Annotations_386x260.json \
+      --sigma 5 \
+      --output-dir datasets/Tenebrio/386x260_s5 \
+      --overwrite
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,6 +76,21 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("datasets/Tenebrio/TenebrioVision_Annotations.json"),
         help="COCO-style Tenebrio annotation JSON.",
+    )
+    parser.add_argument(
+        "--sigma",
+        type=float,
+        default=15.0,
+        help="Gaussian sigma in full-resolution pixels (default 15.0). "
+             "The density is blurred at full resolution then downsampled to 1/8.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="If set, write density CSVs here instead of --data-dir. "
+             "Symlinks for img/ folders are created automatically so the "
+             "output dir is a complete dataset root.",
     )
     parser.add_argument(
         "--overwrite",
@@ -142,8 +168,21 @@ def load_annotation_samples(data_dir: Path, annotation_file: Path) -> list[Teneb
     return samples
 
 
-def build_density_map(width: int, height: int, boxes: list[list[float]]) -> np.ndarray:
-    """Build density map at full resolution with σ=15, matching the standalone training script."""
+def build_density_map(
+    width: int,
+    height: int,
+    boxes: list[list[float]],
+    sigma: float = 15.0,
+    downsample: int = 8,
+) -> np.ndarray:
+    """Build a 1/8-scale density map.
+
+    Steps:
+      1. Place fractional impulses at full resolution.
+      2. Apply Gaussian blur (sigma in full-resolution pixels).
+      3. Downsample to 1/downsample resolution with BICUBIC resampling.
+      4. Renormalise so sum == object count.
+    """
     density = np.zeros((height, width), dtype=np.float32)
     target_count = float(len(boxes))
 
@@ -168,10 +207,28 @@ def build_density_map(width: int, height: int, boxes: list[list[float]]) -> np.n
         if 0 <= x1 < width  and 0 <= y1 < height: density[y1, x1] += wx1 * wy1
 
     if density.sum() > 0:
-        density = gaussian_filter(density, sigma=15.0, mode="reflect")
+        density = gaussian_filter(density, sigma=sigma, mode="reflect")
         density *= target_count / density.sum()
 
+    # Downsample to 1/downsample resolution (ceil so edge pixels are covered)
+    if downsample > 1:
+        out_w = math.ceil(width / downsample)
+        out_h = math.ceil(height / downsample)
+        density_pil = Image.fromarray(density).resize((out_w, out_h), Image.BICUBIC)
+        density = np.array(density_pil, dtype=np.float32)
+        # Renormalise after resize to preserve object count
+        if density.sum() > 0:
+            density *= target_count / density.sum()
+
     return density.astype(np.float32, copy=False)
+
+
+def ensure_img_symlink(src_img_dir: Path, dst_img_dir: Path) -> None:
+    """Create dst_img_dir as a symlink to src_img_dir (absolute path)."""
+    dst_img_dir.parent.mkdir(parents=True, exist_ok=True)
+    if dst_img_dir.exists() or dst_img_dir.is_symlink():
+        return
+    os.symlink(src_img_dir.resolve(), dst_img_dir)
 
 
 def write_density_csv(output_path: Path, density: np.ndarray) -> None:
@@ -181,12 +238,23 @@ def write_density_csv(output_path: Path, density: np.ndarray) -> None:
 
 def main() -> None:
     args = parse_args()
+
+    out_dir = args.output_dir if args.output_dir is not None else args.data_dir
+
+    # If writing to a separate output dir, create img symlinks for each split
+    if args.output_dir is not None:
+        for split in SPLITS:
+            src_img = args.data_dir / split / "img"
+            dst_img = args.output_dir / split / "img"
+            if src_img.is_dir():
+                ensure_img_symlink(src_img, dst_img)
+
     samples = load_annotation_samples(args.data_dir, args.annotation_file)
 
     written = 0
     skipped_existing = 0
     for sample in samples:
-        output_path = args.data_dir / sample.split / "den" / f"{Path(sample.file_name).stem}.csv"
+        output_path = out_dir / sample.split / "den" / f"{Path(sample.file_name).stem}.csv"
         if output_path.is_file() and not args.overwrite:
             skipped_existing += 1
             continue
@@ -205,10 +273,12 @@ def main() -> None:
         else:
             scaled_boxes = sample.boxes
 
-        density = build_density_map(image_width, image_height, scaled_boxes)
+        density = build_density_map(image_width, image_height, scaled_boxes,
+                                    sigma=args.sigma, downsample=8)
         write_density_csv(output_path, density)
         written += 1
 
+    print(f"[precompute] sigma={args.sigma}  output={out_dir}")
     print(f"[precompute] Processed {len(samples)} images")
     print(f"[precompute] Wrote {written} density CSV files")
     if skipped_existing > 0:

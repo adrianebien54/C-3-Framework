@@ -23,7 +23,10 @@ class Trainer():
 
         self.net_name = cfg.NET
         self.net = CrowdCounter(cfg.GPU_ID,self.net_name).cuda()
-        self.optimizer = optim.Adam(self.net.CCN.parameters(), lr=cfg.LR, weight_decay=0)
+        if getattr(cfg, 'OPTIMIZER', 'adamw') == 'adam':
+            self.optimizer = optim.Adam(self.net.CCN.parameters(), lr=cfg.LR, weight_decay=cfg.WEIGHT_DECAY)
+        else:
+            self.optimizer = optim.AdamW(self.net.CCN.parameters(), lr=cfg.LR, weight_decay=cfg.WEIGHT_DECAY)
         # self.optimizer = optim.SGD(self.net.parameters(), cfg.LR, momentum=0.95,weight_decay=5e-4)
         self.scheduler = StepLR(self.optimizer, step_size=cfg.NUM_EPOCH_LR_DECAY, gamma=cfg.LR_DECAY)          
 

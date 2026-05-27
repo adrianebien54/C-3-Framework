@@ -7,6 +7,7 @@ import shutil
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 
 import torchvision.utils as vutils
@@ -124,19 +125,38 @@ def vis_results(exp_name, epoch, writer, restore, img, pred_map, gt_map):
     pil_to_tensor = standard_transforms.ToTensor()
 
     x = []
-    
+
     for idx, tensor in enumerate(zip(img.cpu().data, pred_map, gt_map)):
-        if idx>1:# show only one group
+        if idx > 1:  # show only one group
             break
         pil_input = restore(tensor[0])
-        pil_output = torch.from_numpy(tensor[1]/(tensor[2].max()+1e-10)).repeat(3,1,1)
-        pil_label = torch.from_numpy(tensor[2]/(tensor[2].max()+1e-10)).repeat(3,1,1)
+        img_h, img_w = tensor[0].shape[-2], tensor[0].shape[-1]
+
+        gt_t   = torch.from_numpy(tensor[2].copy()).float()
+        pred_t = torch.from_numpy(tensor[1].copy()).float()
+
+        # Force (1, 1, H, W) regardless of incoming shape
+        # gt_map comes out of LabelNormalize as 2-D (H, W);
+        # pred_map comes from the model as 3-D (1, H, W).
+        gt_t   = gt_t.view(1, 1, *gt_t.shape[-2:])
+        pred_t = pred_t.view(1, 1, *pred_t.shape[-2:])
+
+        # Upsample to image resolution for TensorBoard visualisation only
+        if gt_t.shape[-2] != img_h or gt_t.shape[-1] != img_w:
+            gt_t   = F.interpolate(gt_t,   size=(img_h, img_w), mode='bilinear', align_corners=False)
+            pred_t = F.interpolate(pred_t, size=(img_h, img_w), mode='bilinear', align_corners=False)
+
+        dmax = gt_t.max() + 1e-10
+        pil_label  = (gt_t   / dmax).squeeze(0).repeat(3, 1, 1)   # (3, H, W)
+        pil_output = (pred_t / dmax).squeeze(0).repeat(3, 1, 1)   # (3, H, W)
+
         x.extend([pil_to_tensor(pil_input.convert('RGB')), pil_label, pil_output])
+
     x = torch.stack(x, 0)
     x = vutils.make_grid(x, nrow=3, padding=5)
-    x = (x.numpy()*255).astype(np.uint8)
+    x = (x.numpy() * 255).astype(np.uint8)
 
-    writer.add_image(exp_name + '_epoch_' + str(epoch+1), x)
+    writer.add_image(exp_name + '_epoch_' + str(epoch + 1), x)
 
 
 
@@ -239,7 +259,9 @@ def copy_cur_env(work_dir, dst_dir, exception):
     if not os.path.exists(dst_dir):
         os.mkdir(dst_dir)
 
-    excluded_dirs = {exception, '360p'}
+    # Exclude large data/env/output dirs that should not be snapshot-copied
+    excluded_dirs = {exception, '360p', 'datasets', 'exp', '.venv', '__pycache__',
+                     'node_modules', '.git'}
 
     for filename in os.listdir(work_dir):
 

@@ -20,7 +20,8 @@ class CSRNet(nn.Module):
         x = self.frontend(x)
         x = self.backend(x)
         x = self.output_layer(x)
-        x = F.upsample(x,scale_factor=8)
+        # Output stays at 1/8 resolution — loss is computed at 1/8 scale
+        # against GT density maps that are also stored at 1/8 scale.
         return x
     def _initialize_weights(self):
         for m in self.modules():

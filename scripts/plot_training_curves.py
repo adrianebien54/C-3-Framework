@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate TensorBoard-style 4-panel training curve plot from pipeline tfevents file."""
 
+import argparse
 import glob
 import sys
 from pathlib import Path
@@ -10,8 +11,15 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
-ROOT    = Path(__file__).resolve().parents[1]
-EXP_DIR = ROOT / "exp/05-20_13-07_Tenebrio_CSRNet_0.0001"
+ROOT = Path(__file__).resolve().parents[1]
+
+_parser = argparse.ArgumentParser(description="Plot training curves from a tfevents experiment dir.")
+_parser.add_argument("exp_dir", nargs="?", default="exp/05-20_13-07_Tenebrio_CSRNet_0.0001",
+                     help="Path to experiment dir, relative to repo root or absolute.")
+_args = _parser.parse_args()
+
+_exp_path = Path(_args.exp_dir)
+EXP_DIR = _exp_path if _exp_path.is_absolute() else ROOT / _exp_path
 
 
 def load_scalars_all(exp_dir, tag):
