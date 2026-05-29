@@ -109,3 +109,7 @@ datasets/
 archive/
 *checkpoints*/
 exp/
+# Allow small per-run artifacts inside exp/
+!exp/*/mae_history.json
+!exp/*/training_curves.png
+!exp/*/loss_curve.png
