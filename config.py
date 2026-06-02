@@ -17,18 +17,20 @@ __C.PRE_GCC = False # use the pretrained model on GCC dataset
 __C.PRE_GCC_MODEL = 'path to model' # path to model
 
 __C.RESUME = False
+__C.RESUME_PATH = ''
 
 __C.GPU_ID = [0] # sigle gpu: [0], [1] ...; multi gpus: [0,1]
 
 # learning rate settings
-__C.LR = 1e-4 # learning rate
+__C.LR = 1e-5 # learning rate
 __C.WEIGHT_DECAY = 1e-4 # optimizer weight decay
-__C.OPTIMIZER = 'adamw'  # 'adamw' | 'adam'
+__C.OPTIMIZER = 'adam'  # 'adamw' | 'adam'
 __C.AUG_SET = 0   # augmentation set: 0=none, 1=full suite, 2=flips only
-__C.LR_DECAY = 1.0 # decay rate (1.0 = disabled)
+__C.LR_DECAY = 0.995 # decay rate (1.0 = disabled)
+__C.SIGMA = 11.0 # Gaussian sigma for patch-mode density generation (full-res pixels)
 __C.LR_DECAY_START = -1 # when training epoch is more than it, the learning rate will be begin to decay
 __C.NUM_EPOCH_LR_DECAY = 1 # decay frequency
-__C.MAX_EPOCH = 600
+__C.MAX_EPOCH = 1000
 
 # multi-task learning weights, no use for single model, such as MCNN, VGG, VGG_DECODER, Res50, CSRNet, and so on
 

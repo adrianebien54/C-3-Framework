@@ -4,28 +4,27 @@
 
 Workflow:
   1. Build density impulse map at full image resolution.
-  2. Apply Gaussian blur with sigma (in full-resolution pixels; default 15).
-  3. Downsample to 1/8 of the image resolution (matching CSRNet's output stride).
-  4. Renormalise so the pixel sum equals the object count.
-  5. Write as a CSV file named after the image stem.
+  2. Apply Gaussian blur with the given sigma (in full-resolution pixels).
+  3. Downsample to 1/8 using sum-pooling (reshape into 8×8 blocks and sum),
+     which preserves the total count exactly without renormalisation.
+  4. Write as an HDF5 file (.h5) with dataset key 'density'.
 
-The --sigma flag lets you sweep over different kernel sizes without touching
-the model.  The --output-dir flag writes density CSVs to a parallel directory
-(and symlinks the img/ folders from --data-dir) so multiple sigma variants can
+The --output-dir flag writes density CSVs to a parallel directory
+(and symlinks the img/ folders from --data-dir) so multiple variants can
 live side-by-side without duplicating images.
 
 Usage:
-  # Default: regenerate sigma=15 CSVs in-place (skip existing)
+  # Default: regenerate density CSVs in-place (sigma auto-computed from bbox sizes)
   python scripts/precompute_tenebrio_densities.py \
       --data-dir datasets/Tenebrio/386x260 \
       --annotation-file datasets/Tenebrio/386x260/TenebrioVision_Annotations_386x260.json
 
-  # Sigma variant stored separately:
+  # Override sigma explicitly:
   python scripts/precompute_tenebrio_densities.py \
       --data-dir datasets/Tenebrio/386x260 \
       --annotation-file datasets/Tenebrio/386x260/TenebrioVision_Annotations_386x260.json \
-      --sigma 5 \
-      --output-dir datasets/Tenebrio/386x260_s5 \
+      --sigma 11 \
+      --output-dir datasets/Tenebrio/386x260_s11 \
       --overwrite
 """
 
@@ -33,13 +32,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 import sys
 
+import h5py
 import numpy as np
 from PIL import Image
 from scipy.ndimage import gaussian_filter
@@ -80,9 +79,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sigma",
         type=float,
-        default=15.0,
-        help="Gaussian sigma in full-resolution pixels (default 15.0). "
-             "The density is blurred at full resolution then downsampled to 1/8.",
+        default=None,
+        help="Gaussian sigma in full-resolution pixels. "
+             "If omitted, computed automatically as mean((bbox_w + bbox_h) / 2) / 2 "
+             "from the annotation bounding boxes.",
     )
     parser.add_argument(
         "--output-dir",
@@ -168,11 +168,17 @@ def load_annotation_samples(data_dir: Path, annotation_file: Path) -> list[Teneb
     return samples
 
 
+def compute_sigma_from_boxes(boxes_list: list[list[list[float]]]) -> float:
+    """Compute sigma as mean((bbox_w + bbox_h) / 2) / 2 across all boxes."""
+    sizes = [(bw + bh) / 2.0 for boxes in boxes_list for _, _, bw, bh in boxes]
+    return (sum(sizes) / len(sizes)) / 2.0 if sizes else 15.0
+
+
 def build_density_map(
     width: int,
     height: int,
     boxes: list[list[float]],
-    sigma: float = 15.0,
+    sigma: float,
     downsample: int = 8,
 ) -> np.ndarray:
     """Build a 1/8-scale density map.
@@ -183,8 +189,14 @@ def build_density_map(
       3. Downsample to 1/downsample resolution with BICUBIC resampling.
       4. Renormalise so sum == object count.
     """
-    density = np.zeros((height, width), dtype=np.float32)
-    target_count = float(len(boxes))
+    # Pad canvas to the nearest multiple of downsample before placing impulses,
+    # so the Gaussian tails extend naturally into the padded region during blur.
+    pad_h = (downsample - height % downsample) % downsample
+    pad_w = (downsample - width  % downsample) % downsample
+    H = height + pad_h
+    W = width  + pad_w
+
+    density = np.zeros((H, W), dtype=np.float32)
 
     for bbox in boxes:
         x, y, box_width, box_height = bbox
@@ -201,24 +213,19 @@ def build_density_map(
         wx0 = 1.0 - wx1
         wy0 = 1.0 - wy1
 
-        if 0 <= x0 < width  and 0 <= y0 < height: density[y0, x0] += wx0 * wy0
-        if 0 <= x1 < width  and 0 <= y0 < height: density[y0, x1] += wx1 * wy0
-        if 0 <= x0 < width  and 0 <= y1 < height: density[y1, x0] += wx0 * wy1
-        if 0 <= x1 < width  and 0 <= y1 < height: density[y1, x1] += wx1 * wy1
+        if 0 <= x0 < W and 0 <= y0 < H: density[y0, x0] += wx0 * wy0
+        if 0 <= x1 < W and 0 <= y0 < H: density[y0, x1] += wx1 * wy0
+        if 0 <= x0 < W and 0 <= y1 < H: density[y1, x0] += wx0 * wy1
+        if 0 <= x1 < W and 0 <= y1 < H: density[y1, x1] += wx1 * wy1
 
     if density.sum() > 0:
         density = gaussian_filter(density, sigma=sigma, mode="reflect")
-        density *= target_count / density.sum()
 
-    # Downsample to 1/downsample resolution (ceil so edge pixels are covered)
+    # Sum-pool: exact count preservation since all impulses were placed on the
+    # padded canvas and blurred without boundary trimming.
     if downsample > 1:
-        out_w = math.ceil(width / downsample)
-        out_h = math.ceil(height / downsample)
-        density_pil = Image.fromarray(density).resize((out_w, out_h), Image.BICUBIC)
-        density = np.array(density_pil, dtype=np.float32)
-        # Renormalise after resize to preserve object count
-        if density.sum() > 0:
-            density *= target_count / density.sum()
+        density = density.reshape(H // downsample, downsample,
+                                  W // downsample, downsample).sum(axis=(1, 3))
 
     return density.astype(np.float32, copy=False)
 
@@ -231,9 +238,10 @@ def ensure_img_symlink(src_img_dir: Path, dst_img_dir: Path) -> None:
     os.symlink(src_img_dir.resolve(), dst_img_dir)
 
 
-def write_density_csv(output_path: Path, density: np.ndarray) -> None:
+def write_density_h5(output_path: Path, density: np.ndarray) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savetxt(output_path, density, delimiter=",", fmt="%.8f")
+    with h5py.File(output_path, "w") as f:
+        f.create_dataset("density", data=density, compression="gzip", compression_opts=1)
 
 
 def main() -> None:
@@ -251,10 +259,26 @@ def main() -> None:
 
     samples = load_annotation_samples(args.data_dir, args.annotation_file)
 
+    if args.sigma is not None:
+        sigma = args.sigma
+    else:
+        # Scale boxes to actual image resolution before computing sigma
+        scaled_boxes_all = []
+        for sample in samples:
+            with Image.open(sample.image_path) as image:
+                iw, ih = image.size
+            if (iw, ih) != (sample.width, sample.height):
+                sx, sy = iw / sample.width, ih / sample.height
+                scaled_boxes_all.append([[x*sx, y*sy, bw*sx, bh*sy] for x,y,bw,bh in sample.boxes])
+            else:
+                scaled_boxes_all.append(sample.boxes)
+        sigma = compute_sigma_from_boxes(scaled_boxes_all)
+        print(f"[precompute] sigma auto-computed: {sigma:.2f} (mean bbox avg-dim / 2)")
+
     written = 0
     skipped_existing = 0
     for sample in samples:
-        output_path = out_dir / sample.split / "den" / f"{Path(sample.file_name).stem}.csv"
+        output_path = out_dir / sample.split / "den" / f"{Path(sample.file_name).stem}.h5"
         if output_path.is_file() and not args.overwrite:
             skipped_existing += 1
             continue
@@ -274,13 +298,13 @@ def main() -> None:
             scaled_boxes = sample.boxes
 
         density = build_density_map(image_width, image_height, scaled_boxes,
-                                    sigma=args.sigma, downsample=8)
-        write_density_csv(output_path, density)
+                                    sigma=sigma, downsample=8)
+        write_density_h5(output_path, density)
         written += 1
 
-    print(f"[precompute] sigma={args.sigma}  output={out_dir}")
+    print(f"[precompute] sigma={sigma:.2f}  output={out_dir}")
     print(f"[precompute] Processed {len(samples)} images")
-    print(f"[precompute] Wrote {written} density CSV files")
+    print(f"[precompute] Wrote {written} density HDF5 files (.h5)")
     if skipped_existing > 0:
         print(f"[precompute] Skipped {skipped_existing} existing density CSV files")
 

@@ -270,7 +270,7 @@ def copy_cur_env(work_dir, dst_dir, exception):
 
 
         if os.path.isdir(file) and filename not in excluded_dirs:
-            shutil.copytree(file, dst_file)
+            shutil.copytree(file, dst_file, dirs_exist_ok=True)
         elif os.path.isfile(file):
             shutil.copyfile(file,dst_file)
 
